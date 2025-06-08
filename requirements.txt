@@ -1,4 +1,2 @@
 matplotlib
-pandas
 numpy
-mplot3d-dragger
