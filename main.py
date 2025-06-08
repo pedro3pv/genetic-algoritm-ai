@@ -1,237 +1,307 @@
-import pandas as pd
 import numpy as np
+import csv  # For reading CSV files (standard Python library)
 import random
-import math
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D # For 3D plotting
 
 # --- Configuration Parameters ---
-# These can be tuned based on the problem and experimentation
-POPULATION_SIZE = 100        # N: Number of individuals in the population
-MAX_GENERATIONS = 500      # Maximum number of generations
-MUTATION_RATE = 0.01       # Probability of mutation (1%)
-TOURNAMENT_SIZE = 3         # Size of the tournament for selection
-ELITISM_COUNT = 2           # Ne: Number of best individuals to carry to next generation
+POPULATION_SIZE = 100
+MAX_GENERATIONS = 500
+MUTATION_RATE = 0.01
+TOURNAMENT_SIZE = 3
+ELITISM_COUNT = 2
 
-# --- 1. Data Loading and Preparation ---
-def load_points(csv_path="CaixeiroGruposGA.csv"):
-    """Loads points from the CSV file."""
-    df = pd.read_csv(csv_path, header=None, names=['x', 'y', 'z', 'group'])
-    
-    # Identify the origin (last point as per problem description)
-    # The CSV might have multiple (0,0,0) if points are near origin, but one is designated.
-    # We will treat the explicit (0,0,0,0) line as the origin.
-    # If there are other (0,0,0) points with different group IDs, they are treated as visitable.
-    
-    # Store all points as numpy arrays for easier calculation
-    all_points_coords = [np.array([row['x'], row['y'], row['z']]) for _, row in df.iterrows()]
-    
-    # The last point in the CSV is the designated origin
-    origin_coord = all_points_coords[-1]
-    
-    # Visitable points are all points EXCEPT the designated origin point itself.
-    # We need to be careful if (0,0,0) appears elsewhere but is not the designated origin.
-    # For simplicity, we'll use all unique points, then identify the origin index.
-    
-    unique_coords_list = []
-    unique_coords_set = set()
-    for i, p_coord in enumerate(all_points_coords):
-        p_tuple = tuple(p_coord)
-        if p_tuple not in unique_coords_set:
-            unique_coords_set.add(p_tuple)
-            unique_coords_list.append(p_coord)
-            
-    points_data = np.array(unique_coords_list)
-    
-    # Find the index of the origin within our unique points_data
+NO_IMPROVEMENT_GENERATIONS_THRESHOLD = 50
+MIN_COST_IMPROVEMENT_FOR_RESET = 0.001
+
+
+# --- 1. Data Loading and Preparation (NumPy/CSV version) ---
+def load_points_numpy(csv_path="CaixeiroGruposGA.csv"):
+    """Loads points from the CSV file using only built-in Python, csv module, and NumPy."""
+    all_rows_data = []  # To store np.array([x,y,z]) from each row
+    try:
+        with open(csv_path, 'r', newline='') as file:  # Added newline='' for csv module best practice
+            csv_reader = csv.reader(file)
+            for i, row in enumerate(csv_reader):
+                if not row: continue  # Skip empty lines
+                try:
+                    # Expecting x, y, z, group_id. We only need x, y, z for coordinates.
+                    # The problem states the CSV is (x, y, z, group_id)
+                    x = float(row[0])
+                    y = float(row[1])
+                    z = float(row[2])
+                    # group = int(row[3]) # group is not used for TSP path calculation here
+                    all_rows_data.append(np.array([x, y, z]))
+                except ValueError as e:
+                    print(f"Warning: Skipping CSV row {i + 1} due to value parsing error: {row} - {e}")
+                    continue
+                except IndexError as e:
+                    print(
+                        f"Warning: Skipping CSV row {i + 1} due to insufficient columns (expected at least 3 for x,y,z): {row} - {e}")
+                    continue
+    except FileNotFoundError:
+        print(f"Error: CSV file '{csv_path}' not found.")
+        raise  # Re-raise to be caught by main
+
+    if not all_rows_data:
+        raise ValueError("No data successfully loaded from CSV. Check file content and format.")
+
+    # The last point in the CSV is the designated origin, as per problem spec "O último ponto (0,0,0,0) é a origem."
+    designated_origin_coord = all_rows_data[-1]
+
+    # Create a list of unique points.
+    # The order of points_data will be based on first appearance in the CSV.
+    unique_coords_set_tuples = set()  # Use a set of tuples for efficient uniqueness checking
+    final_points_list = []
+
+    for p_coord in all_rows_data:
+        p_tuple = tuple(p_coord)  # Tuples are hashable for sets
+        if p_tuple not in unique_coords_set_tuples:
+            unique_coords_set_tuples.add(p_tuple)
+            final_points_list.append(p_coord)  # Store the original np.array
+
+    points_data = np.array(final_points_list)
+
+    # Find the index of the designated_origin_coord in the unique points_data.
+    # This point *must* exist in points_data because it came from all_rows_data.
     origin_idx = -1
-    for i, p_coord in enumerate(points_data):
-        if np.array_equal(p_coord, origin_coord):
+    for i, p_coord_unique in enumerate(points_data):
+        if np.array_equal(p_coord_unique, designated_origin_coord):
             origin_idx = i
             break
-    
+
     if origin_idx == -1:
-        # This case should ideally not happen if origin is in the file
-        # Add it if it was somehow filtered out by uniqueness (e.g. if origin was not last row)
-        points_data = np.vstack([points_data, origin_coord])
-        origin_idx = len(points_data) - 1
-        print("Warning: Origin had to be re-added. Check CSV format.")
+        # This should not happen if designated_origin_coord was in all_rows_data
+        # and then processed into final_points_list.
+        # Could happen if designated_origin_coord had NaN values from an empty last line parsed as float.
+        # However, the problem implies the origin is (0,0,0).
+        # Fallback: try to find a (0,0,0) point if designated one is problematic.
+        print(
+            f"Warning: Designated origin {designated_origin_coord} not directly found in unique points. Attempting to find (0,0,0).")
+        for i, p_coord_unique in enumerate(points_data):
+            if np.array_equal(p_coord_unique, np.array([0.0, 0.0, 0.0])):
+                origin_idx = i
+                designated_origin_coord = points_data[i]  # Update to the found one
+                print(f"Using {designated_origin_coord} at index {i} as origin.")
+                break
+        if origin_idx == -1:
+            raise ValueError(
+                "Critical: Could not establish a valid origin point. Check CSV data, especially the last line.")
 
     visitable_points_indices = [i for i in range(len(points_data)) if i != origin_idx]
-    
-    print(f"Loaded {len(points_data)} unique points.")
-    print(f"Origin coordinates: {points_data[origin_idx]} at index {origin_idx}")
-    print(f"Number of other visitable points: {len(visitable_points_indices)}")
-    
-    # The constraint "30 < Npontos < 60" might refer to the number of visitable_points_indices.
-    # If you need to enforce this, you'd filter `visitable_points_indices` here.
-    # For now, we use all unique non-origin points.
-    if not (30 < len(visitable_points_indices) < 60):
-        print(f"Warning: Number of visitable points ({len(visitable_points_indices)}) is outside the 30-60 range.")
-        print("The GA will proceed with all loaded unique points.")
-        # If strict adherence is needed, one might sample or filter groups here.
-        # Example (if you wanted to sample):
-        # if len(visitable_points_indices) > 59:
-        #     visitable_points_indices = random.sample(visitable_points_indices, 50) # Sample 50 points
-        #     print(f"Sampled down to {len(visitable_points_indices)} visitable points.")
 
+    print(f"Loaded {len(points_data)} unique points using NumPy/CSV.")
+    print(f"Designated Origin (target from last CSV line): {designated_origin_coord}")
+    print(f"Effective Origin in points_data: {points_data[origin_idx]} at index {origin_idx}")
+    print(f"Number of other visitable points: {len(visitable_points_indices)}")
+
+    # Constraint check from problem description
+    if len(visitable_points_indices) > 0:  # Only warn if there are points to visit
+        if not (30 < len(visitable_points_indices) < 60):
+            print(
+                f"Warning: Number of visitable points ({len(visitable_points_indices)}) is outside the 30-60 range suggested in problem description.")
+            print("The GA will proceed with the loaded number of visitable points.")
+    elif len(points_data) > 1:  # More than one unique point, but all are the origin
+        print(f"Warning: All {len(points_data)} unique points seem to be the origin. No points to visit.")
+    elif len(points_data) <= 1:
+        print(f"Warning: Only {len(points_data)} unique point(s) loaded. TSP is trivial or not possible.")
 
     return points_data, origin_idx, visitable_points_indices
 
+
 # --- 2. Core GA Functions ---
 def euclidean_distance_3d(p1, p2):
-    """Calculates 3D Euclidean distance between two points."""
     return np.linalg.norm(p1 - p2)
 
-def calculate_route_distance(route_indices, points_data, origin_idx):
-    """
-    Calculates the total distance of a route.
-    A route_indices is a permutation of visitable_points_indices.
-    The full path is origin -> route_indices[0] -> ... -> route_indices[-1] -> origin.
-    """
-    if not route_indices: # Empty route
-        return 0 # Or a very large number if empty routes are invalid
 
+def calculate_route_distance(route_indices, points_data, origin_idx):
+    if not route_indices: return float('inf')
     total_dist = 0
-    
-    # Distance from origin to the first point in the route
     total_dist += euclidean_distance_3d(points_data[origin_idx], points_data[route_indices[0]])
-    
-    # Distance between points in the route
     for i in range(len(route_indices) - 1):
-        total_dist += euclidean_distance_3d(points_data[route_indices[i]], points_data[route_indices[i+1]])
-        
-    # Distance from the last point in the route back to origin
+        total_dist += euclidean_distance_3d(points_data[route_indices[i]], points_data[route_indices[i + 1]])
     total_dist += euclidean_distance_3d(points_data[route_indices[-1]], points_data[origin_idx])
-    
     return total_dist
 
+
 def create_individual(visitable_points_indices):
-    """Creates a random individual (a permutation of visitable points)."""
-    individual = list(visitable_points_indices) # Make a mutable copy
+    individual = list(visitable_points_indices)
     random.shuffle(individual)
     return individual
 
+
 def initialize_population(pop_size, visitable_points_indices):
-    """Initializes the population with random individuals."""
     return [create_individual(visitable_points_indices) for _ in range(pop_size)]
 
+
 def calculate_fitness(route_distance):
-    """Calculates fitness (inverse of distance). Higher is better."""
-    if route_distance == 0:
-        return float('inf') # Avoid division by zero, though unlikely for TSP
+    if route_distance == 0: return float('inf')  # Should not happen for TSP if dist > 0
+    if route_distance == float('inf'): return 0.0  # For empty/invalid routes
     return 1.0 / route_distance
 
-# --- 3. GA Operators ---
 
-# Selection: Tournament Selection
+# --- 3. GA Operators ---
 def tournament_selection(population, fitnesses, k=TOURNAMENT_SIZE):
-    """Selects an individual using tournament selection."""
-    tournament_contenders_indices = random.sample(range(len(population)), k)
+    # Ensure k is not larger than population size, can happen with small test populations
+    actual_k = min(k, len(population))
+    if actual_k == 0: return random.choice(population)  # Should not happen if pop > 0
+
+    tournament_contenders_indices = random.sample(range(len(population)), actual_k)
     best_contender_idx = -1
     best_fitness = -1.0
-    
     for contender_idx in tournament_contenders_indices:
         if fitnesses[contender_idx] > best_fitness:
             best_fitness = fitnesses[contender_idx]
             best_contender_idx = contender_idx
-            
     return population[best_contender_idx]
 
-# Recombination: Custom Two-Point Crossover for Permutations
+
 def crossover(parent1, parent2):
-    """
-    Performs a custom two-point crossover suitable for permutation-based problems.
-    1. A random segment from parent1 is copied to the child.
-    2. The remaining genes are filled from parent2 in order, excluding duplicates.
-    """
     child = [None] * len(parent1)
-    
-    # 1. Select a random segment from parent1
+    if not parent1: return []  # Handle empty parent case, though unlikely
+
+    # Ensure start_idx and end_idx are valid for list length
+    # len(parent1) must be at least 2 for sample(..., 2)
+    if len(parent1) < 2:
+        return parent1[:]  # Or handle as an error/special case
+
     start_idx, end_idx = sorted(random.sample(range(len(parent1)), 2))
-    
-    # Copy the segment from parent1 to the child
-    segment_from_p1 = parent1[start_idx : end_idx + 1]
-    child[start_idx : end_idx + 1] = segment_from_p1
-    
-    # 2. Fill remaining genes from parent2
+
+    segment_from_p1 = parent1[start_idx: end_idx + 1]
+    child[start_idx: end_idx + 1] = segment_from_p1
+
     current_child_idx = 0
     for gene_p2 in parent2:
-        if gene_p2 not in segment_from_p1: # Avoid duplicates
-            while child[current_child_idx] is not None: # Find next empty spot
-                current_child_idx += 1
-            child[current_child_idx] = gene_p2
-            
+        if gene_p2 not in segment_from_p1:
+            # Find next empty spot for genes from parent2
+            # This loop needs to handle the child list filling up
+            filled = False
+            for i in range(len(child)):  # Iterate through available slots in child
+                if child[i] is None:
+                    child[i] = gene_p2
+                    filled = True
+                    break
+            if not filled and gene_p2 not in child:  # Should not happen if logic is correct
+                # This case means child is full but gene_p2 wasn't placed.
+                # This implies an issue if len(parent1) == len(parent2) and all elements are unique.
+                # For TSP, this should be fine.
+                pass
+
+    # Ensure child is fully formed and a valid permutation
+    if None in child:
+        # This can happen if parent2 doesn't have all missing elements
+        # (e.g. if parents are of different types/lengths, not for this TSP)
+        # Fill remaining Nones with elements from parent1 not already in child
+        # This is a fallback, ideally the above logic should cover permutation crossover
+        elements_in_child = set(c for c in child if c is not None)
+        remaining_from_parent1 = [g for g in parent1 if g not in elements_in_child]
+
+        current_fill_idx = 0
+        for i in range(len(child)):
+            if child[i] is None:
+                if current_fill_idx < len(remaining_from_parent1):
+                    child[i] = remaining_from_parent1[current_fill_idx]
+                    current_fill_idx += 1
+                else:
+                    # This is a problem - not enough unique elements to fill.
+                    # For TSP, all individuals should have same set of unique genes.
+                    # This indicates a deeper issue if reached.
+                    # print("Error: Crossover could not form a complete child permutation.")
+                    # Fallback to one of the parents or a copy to avoid None values
+                    return parent1[:] if random.random() < 0.5 else parent2[:]
+
     return child
 
-# Mutation: Swap Mutation
+
 def mutate(individual, mutation_rate=MUTATION_RATE):
-    """Performs swap mutation on an individual."""
     if random.random() < mutation_rate:
-        if len(individual) >= 2: # Need at least two genes to swap
+        if len(individual) >= 2:
             idx1, idx2 = random.sample(range(len(individual)), 2)
             individual[idx1], individual[idx2] = individual[idx2], individual[idx1]
     return individual
 
+
 # --- 4. Main GA Loop ---
 def genetic_algorithm(points_data, origin_idx, visitable_points_indices,
-                      pop_size, max_gens, mutation_rate_val, tournament_size_val, elitism_count_val):
-    """Runs the Genetic Algorithm."""
-    
+                      pop_size, max_gens, mutation_rate_val, tournament_size_val, elitism_count_val,
+                      no_improvement_gens_threshold, min_cost_improvement_reset):
+    if not visitable_points_indices:
+        print("GA cannot run: No points to visit (visitable_points_indices is empty).")
+        return None, float('inf'), [], "No visitable points", 0
+
     population = initialize_population(pop_size, visitable_points_indices)
     best_overall_route = None
     best_overall_distance = float('inf')
-    
     history_best_distance = []
 
-    print(f"\nStarting GA with Pop: {pop_size}, Gens: {max_gens}, MutRate: {mutation_rate_val}, TournSize: {tournament_size_val}, Elitism: {elitism_count_val}")
+    generations_since_last_significant_improvement = 0
+    stop_reason = f"Reached maximum generations ({max_gens})."
 
+    print(
+        f"\nStarting GA with Pop: {pop_size}, Gens: {max_gens}, MutRate: {mutation_rate_val}, TournSize: {tournament_size_val}, Elitism: {elitism_count_val}")
+    print(
+        f"Stopping if no improvement for {no_improvement_gens_threshold} gens (min cost improvement: {min_cost_improvement_reset}).")
+
+    gen_count = 0
     for generation in range(max_gens):
-        # Calculate fitness for each individual
+        gen_count = generation + 1
         route_distances = [calculate_route_distance(ind, points_data, origin_idx) for ind in population]
-        fitnesses = [calculate_fitness(dist) for dist in route_distances]
-        
-        # Find best in current generation
-        current_best_idx = np.argmax(fitnesses)
-        current_best_distance = route_distances[current_best_idx]
-        
-        if current_best_distance < best_overall_distance:
-            best_overall_distance = current_best_distance
-            best_overall_route = population[current_best_idx]
-        
+        fitnesses = [calculate_fitness(dist) for dist in route_distances]  # Fitness for selection
+
+        current_best_idx_in_pop = np.argmin(route_distances)  # Min distance is best
+        current_best_distance_in_pop = route_distances[current_best_idx_in_pop]
+
+        if current_best_distance_in_pop < best_overall_distance:
+            if best_overall_distance - current_best_distance_in_pop >= min_cost_improvement_reset:
+                generations_since_last_significant_improvement = 0
+            else:  # Improvement was too small
+                generations_since_last_significant_improvement += 1
+            best_overall_distance = current_best_distance_in_pop
+            best_overall_route = population[current_best_idx_in_pop][:]  # Store a copy
+        else:
+            generations_since_last_significant_improvement += 1
+
         history_best_distance.append(best_overall_distance)
 
-        if (generation + 1) % 50 == 0: # Print progress
-            print(f"Generation {generation + 1}/{max_gens} - Best Distance: {best_overall_distance:.2f}")
+        if (generation + 1) % 50 == 0 or generation == 0:
+            print(
+                f"Generation {generation + 1}/{max_gens} - Best Distance: {best_overall_distance:.2f} (No sig. improvement for {generations_since_last_significant_improvement} gens)")
 
-        # Create new population
+        if generations_since_last_significant_improvement >= no_improvement_gens_threshold:
+            stop_reason = f"Stopped early at generation {generation + 1}: No significant cost improvement for {no_improvement_gens_threshold} generations."
+            print(f"\n{stop_reason}")
+            break
+
         new_population = []
-        
-        # Elitism: Carry over the best individuals
-        if elitism_count_val > 0:
-            sorted_population_indices = np.argsort(fitnesses)[::-1] # Sort by fitness descending
-            for i in range(elitism_count_val):
+        if elitism_count_val > 0 and len(population) > 0:
+            # Ensure elitism_count is not more than population size
+            actual_elitism_count = min(elitism_count_val, len(population))
+            sorted_population_indices = np.argsort(route_distances)  # Lower distance is better
+            for i in range(actual_elitism_count):
                 new_population.append(population[sorted_population_indices[i]])
-        
-        # Fill the rest of the new population
+
         while len(new_population) < pop_size:
+            if not population: break  # Should not happen if pop_size > 0
             parent1 = tournament_selection(population, fitnesses, k=tournament_size_val)
             parent2 = tournament_selection(population, fitnesses, k=tournament_size_val)
-            
+
             child = crossover(parent1, parent2)
             child = mutate(child, mutation_rate=mutation_rate_val)
-            
+
             new_population.append(child)
-            
+
         population = new_population
-        
-    print(f"\nGA Finished. Best overall distance: {best_overall_distance:.2f}")
-    return best_overall_route, best_overall_distance, history_best_distance
+        if not population:  # Safety break if population somehow becomes empty
+            print("Population became empty. Stopping GA.")
+            stop_reason = "Population became empty."
+            break
+
+    print(f"\nGA Finished. {stop_reason}")
+    print(f"Best overall distance: {best_overall_distance:.2f} after {gen_count} generations.")
+    return best_overall_route, best_overall_distance, history_best_distance, stop_reason, gen_count
 
 
-# --- 5. Visualization (Optional but helpful) ---
+# --- 5. Visualization ---
 def plot_route(points_data, route_indices, origin_idx, title="TSP Route"):
-    """Plots the 3D route."""
     if not route_indices:
         print("Cannot plot empty route.")
         return
@@ -239,106 +309,106 @@ def plot_route(points_data, route_indices, origin_idx, title="TSP Route"):
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
 
-    # Full path including origin
     full_path_indices = [origin_idx] + route_indices + [origin_idx]
     path_coords = points_data[full_path_indices]
 
-    # Plot points
-    ax.scatter(points_data[:, 0], points_data[:, 1], points_data[:, 2], c='blue', marker='o', label='All Points')
-    ax.scatter(points_data[origin_idx, 0], points_data[origin_idx, 1], points_data[origin_idx, 2], c='red', s=100, marker='X', label='Origin')
-    
-    # Plot visited points in order (excluding origin for this highlight)
-    visited_coords = points_data[route_indices]
-    ax.scatter(visited_coords[:,0], visited_coords[:,1], visited_coords[:,2], c='green', s=50, marker='o', label='Visited in Route')
+    ax.scatter(points_data[:, 0], points_data[:, 1], points_data[:, 2], c='blue', marker='o', s=10, label='All Points',
+               alpha=0.3)
+    ax.scatter(points_data[origin_idx, 0], points_data[origin_idx, 1], points_data[origin_idx, 2], c='red', s=100,
+               marker='X', label='Origin', depthshade=False)
 
+    visited_coords_in_route = points_data[route_indices]
+    ax.scatter(visited_coords_in_route[:, 0], visited_coords_in_route[:, 1], visited_coords_in_route[:, 2], c='lime',
+               s=30, marker='o', label='Visited (in order)', depthshade=False, edgecolors='k', linewidths=0.5)
 
-    # Plot path
-    ax.plot(path_coords[:, 0], path_coords[:, 1], path_coords[:, 2], color='green', linestyle='-', linewidth=1.5, label='Route')
+    ax.plot(path_coords[:, 0], path_coords[:, 1], path_coords[:, 2], color='green', linestyle='-', linewidth=1.5,
+            label='Route Path')
 
-    # Annotate start/end points of the actual TSP part (first and last visitable point)
-    ax.text(points_data[route_indices[0],0], points_data[route_indices[0],1], points_data[route_indices[0],2], "Start", color='black')
-    ax.text(points_data[route_indices[-1],0], points_data[route_indices[-1],1], points_data[route_indices[-1],2], "End", color='black')
-
+    if route_indices:  # Add text for start and end of the TSP part of the route
+        first_visited_idx = route_indices[0]
+        last_visited_idx = route_indices[-1]
+        ax.text(points_data[first_visited_idx, 0], points_data[first_visited_idx, 1], points_data[first_visited_idx, 2],
+                " Start Visit", color='darkgreen', fontsize=9)
+        ax.text(points_data[last_visited_idx, 0], points_data[last_visited_idx, 1], points_data[last_visited_idx, 2],
+                " End Visit", color='darkred', fontsize=9)
 
     ax.set_xlabel('X Coordinate')
     ax.set_ylabel('Y Coordinate')
     ax.set_zlabel('Z Coordinate')
     ax.set_title(title)
     ax.legend()
+    plt.tight_layout()
     plt.show()
 
-def plot_fitness_history(history_best_distance, title="Fitness Convergence"):
+
+def plot_fitness_history(history_best_distance, title="Cost Convergence"):
     plt.figure(figsize=(10, 6))
-    plt.plot(history_best_distance, marker='.')
+    plt.plot(history_best_distance, marker='.', linestyle='-')
     plt.title(title)
     plt.xlabel("Generation")
     plt.ylabel("Best Distance (Cost)")
     plt.grid(True)
     plt.show()
 
+
 # --- Main Execution ---
 if __name__ == "__main__":
-    # 1. Load data
-    points_data, origin_idx, visitable_points_indices = load_points()
+    csv_file_path = "CaixeiroGruposGA.csv"
+    try:
+        points_data, origin_idx, visitable_points_indices = load_points_numpy(csv_file_path)
+    except (FileNotFoundError, ValueError) as e:  # Catch errors from loading
+        print(f"Exiting due to error: {e}")
+        exit()
 
-    if not visitable_points_indices:
-        print("Error: No visitable points found. Check data or loading logic.")
+    # Check if TSP is runnable
+    if not visitable_points_indices and len(points_data) > 1:
+        print(
+            "TSP cannot run: No points to visit (all unique points might be the origin, or only one unique point was effectively non-origin).")
+    elif len(points_data) <= 1:
+        print("TSP cannot run: Not enough unique points loaded (need at least one origin and one point to visit).")
     else:
-        # 2. Run GA
-        # You can experiment with different parameters here
-        best_route, best_distance, fitness_history = genetic_algorithm(
+        best_route, best_distance, fitness_history, stop_reason_text, generations_run = genetic_algorithm(
             points_data, origin_idx, visitable_points_indices,
-            pop_size=POPULATION_SIZE, 
-            max_gens=MAX_GENERATIONS, 
-            mutation_rate_val=MUTATION_RATE, 
-            tournament_size_val=TOURNAMENT_SIZE, 
-            elitism_count_val=ELITISM_COUNT
+            pop_size=POPULATION_SIZE,
+            max_gens=MAX_GENERATIONS,
+            mutation_rate_val=MUTATION_RATE,
+            tournament_size_val=TOURNAMENT_SIZE,
+            elitism_count_val=ELITISM_COUNT,
+            no_improvement_gens_threshold=NO_IMPROVEMENT_GENERATIONS_THRESHOLD,
+            min_cost_improvement_reset=MIN_COST_IMPROVEMENT_FOR_RESET
         )
 
         print("\n--- Results ---")
-        print(f"Best route (indices of visitable points): {best_route}")
-        # To get actual coordinates for the report:
-        # best_route_coords = [points_data[i] for i in best_route]
-        # print(f"Best route coordinates (excluding origin start/end): {best_route_coords}")
+        print(f"Algorithm Stop Reason: {stop_reason_text}")
+        print(f"Total generations run: {generations_run}")
+        # print(f"Best route (indices of visitable points): {best_route if best_route else 'N/A'}") # Can be long
         print(f"Total distance of best route: {best_distance:.4f}")
-        
-        # 3. Analysis/Mode of generations (as requested)
-        # "Faça uma análise se de qual é a moda de gerações para obter uma solução aceitável."
-        # This typically means: run the GA multiple times and see around which generation
-        # an "acceptable" solution (e.g., within X% of the best known, or when improvements stagnate)
-        # is usually found. For a single run, we can see when major improvements stop.
-        # For a proper mode, you'd run this many times.
-        if fitness_history:
-            improvements = np.diff(fitness_history)
-            stagnation_point = np.where(improvements >= -0.001 * best_distance)[0] # e.g. improvement less than 0.1%
-            if len(stagnation_point) > 0:
-                 # Find the last point of significant improvement
-                last_sig_improvement_gen = 0
-                for i in range(len(fitness_history) - 2, 0, -1):
-                    if fitness_history[i] - fitness_history[i+1] > 0.001 * best_distance: # More than 0.1% improvement
-                        last_sig_improvement_gen = i
-                        break
-                print(f"Major improvements seemed to slow down around generation: {last_sig_improvement_gen +1}")
 
-
-        # 4. Plotting (optional, but good for reports)
         if best_route:
-            plot_route(points_data, best_route, origin_idx, title=f"Best TSP Route Found (Distance: {best_distance:.2f})")
+            plot_route(points_data, best_route, origin_idx, title=f"Best TSP Route (Cost: {best_distance:.2f})")
         if fitness_history:
-            plot_fitness_history(fitness_history, title=f"Convergence (Final Distance: {best_distance:.2f})")
-            
+            plot_fitness_history(fitness_history,
+                                 title=f"Convergence (Final Cost: {best_distance:.2f}, Gens: {generations_run})")
+
         print("\n--- For your Report ---")
         print("Methodology:")
         print(f"  - Genetic Algorithm for 3D TSP.")
+        print(f"  - Libraries used: NumPy, Matplotlib, CSV (Python standard library).")
         print(f"  - Population Size (N): {POPULATION_SIZE}")
         print(f"  - Max Generations: {MAX_GENERATIONS}")
         print(f"  - Selection: Tournament (size {TOURNAMENT_SIZE})")
         print(f"  - Crossover: Custom two-point permutation crossover")
-        print(f"  - Mutation: Swap mutation (rate {MUTATION_RATE*100}%)")
+        print(f"  - Mutation: Swap mutation (rate {MUTATION_RATE * 100}%)")
         print(f"  - Elitism: {ELITISM_COUNT} best individuals carried over")
-        print(f"  - Fitness Function: 1 / Total_Route_Distance")
-        print(f"  - Number of unique points (excluding origin for permutation): {len(visitable_points_indices)}")
+        print(
+            f"  - Fitness Function: 1 / Total_Route_Distance (internally, cost/distance directly minimized for 'best')")
+        print(f"  - Number of unique points in dataset: {len(points_data)}")
+        print(f"  - Number of visitable points (excluding origin): {len(visitable_points_indices)}")
+        print(f"  - Stopping criteria:")
+        print(f"    - Reaching max generations ({MAX_GENERATIONS}).")
+        print(
+            f"    - OR, if no cost improvement greater than {MIN_COST_IMPROVEMENT_FOR_RESET} for {NO_IMPROVEMENT_GENERATIONS_THRESHOLD} consecutive generations.")
         print("\nResults:")
+        print(f"  - Algorithm stopped because: {stop_reason_text}")
+        print(f"  - Actual generations executed: {generations_run}")
         print(f"  - Best distance found: {best_distance:.4f}")
-        # print(f"  - Best route (sequence of visitable point indices): {best_route}")
-        # Add details from fitness_history or multiple runs for "mode of generations"
