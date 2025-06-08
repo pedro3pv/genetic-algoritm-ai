@@ -3,9 +3,8 @@ import csv
 import random
 import matplotlib.pyplot as plt
 from collections import Counter
-import os # For creating directories and path joining
+import os
 
-# --- Configuration Parameters ---
 POPULATION_SIZE = 100
 MAX_GENERATIONS = 500
 MUTATION_RATE = 0.01
@@ -19,16 +18,14 @@ MIN_VISITABLE_POINTS_TARGET = 31
 MAX_VISITABLE_POINTS_TARGET = 59
 N_POINTS_TO_SELECT_IF_TOO_MANY = 50
 
-NUM_RUNS_FOR_STATS = 10 # Alterado para 3 para testes mais rápidos, ajuste conforme necessário
+NUM_RUNS_FOR_STATS = 10
 ACCEPTABLE_SOLUTION_CRITERION_MET_STAGNATION = "No significant cost improvement"
 ACCEPTABLE_SOLUTION_CRITERION_MET_MAX_GENS = "Reached maximum generations"
 
-# --- Output Configuration ---
-OUTPUT_IMAGE_DIR = "ga_tsp_results" # Directory to save images
-SAVE_PLOTS = True # Set to False to disable saving images
-SHOW_PLOTS_AFTER_SAVING = False # Set to True if you also want to see plots after saving
+OUTPUT_IMAGE_DIR = "ga_tsp_results"
+SAVE_PLOTS = True
+SHOW_PLOTS_AFTER_SAVING = False
 
-# --- 1. Data Loading and Preparation (NumPy/CSV version) ---
 def load_points_numpy(csv_path="CaixeiroGruposGA.csv"):
     """
     Loads points from the CSV file.
@@ -91,38 +88,24 @@ def load_points_numpy(csv_path="CaixeiroGruposGA.csv"):
     all_potential_visitable_indices_full = [i for i in range(len(points_data_full)) if i != origin_idx]
     n_available_visitable = len(all_potential_visitable_indices_full)
 
-    # print(f"\n--- Point Selection Process ---") # Reduced verbosity for multiple runs
-    # print(f"Loaded {len(points_data_full)} unique points initially.")
-    # print(f"Origin: {points_data_full[origin_idx]} at index {origin_idx} in full unique list.")
-    # print(f"Total potential visitable points (excluding origin): {n_available_visitable}")
-
     if n_available_visitable == 0:
         visitable_points_indices_selected = []
-        # print("Warning: No points available to visit after excluding origin.")
     elif MIN_VISITABLE_POINTS_TARGET <= n_available_visitable <= MAX_VISITABLE_POINTS_TARGET:
         visitable_points_indices_selected = all_potential_visitable_indices_full
-        # print(f"Using all {n_available_visitable} available visitable points (within target range {MIN_VISITABLE_POINTS_TARGET}-{MAX_VISITABLE_POINTS_TARGET}).")
     elif n_available_visitable > MAX_VISITABLE_POINTS_TARGET:
         num_to_sample = N_POINTS_TO_SELECT_IF_TOO_MANY
         if not (MIN_VISITABLE_POINTS_TARGET <= num_to_sample <= MAX_VISITABLE_POINTS_TARGET):
-            # print(f"Warning: N_POINTS_TO_SELECT_IF_TOO_MANY ({num_to_sample}) is outside target range. Adjusting selection count.")
             num_to_sample = sorted([MIN_VISITABLE_POINTS_TARGET, num_to_sample, MAX_VISITABLE_POINTS_TARGET])[1]
 
         if num_to_sample > n_available_visitable :
              num_to_sample = n_available_visitable
 
         visitable_points_indices_selected = random.sample(all_potential_visitable_indices_full, num_to_sample)
-        # print(f"Available visitable points ({n_available_visitable}) > {MAX_VISITABLE_POINTS_TARGET}. Randomly selected {len(visitable_points_indices_selected)} points.")
     else:
         visitable_points_indices_selected = all_potential_visitable_indices_full
-        # print(f"Warning: Number of visitable points ({n_available_visitable}) is less than {MIN_VISITABLE_POINTS_TARGET}. Using all available.")
-
-    # print(f"Final number of visitable points for GA: {len(visitable_points_indices_selected)}")
-    # print(f"--------------------------------\n")
     return points_data_full, origin_idx, visitable_points_indices_selected
 
 
-# --- 2. Core GA Functions --- (No changes here)
 def euclidean_distance_3d(p1, p2):
     return np.linalg.norm(p1 - p2)
 
@@ -148,7 +131,6 @@ def calculate_fitness(route_distance):
     if route_distance == float('inf'): return 0.0
     return 1.0 / route_distance
 
-# --- 3. GA Operators --- (No changes here)
 def tournament_selection(population, fitnesses, k=TOURNAMENT_SIZE):
     actual_k = min(k, len(population))
     if actual_k == 0: return random.choice(population) if population else None
@@ -196,7 +178,6 @@ def mutate(individual, mutation_rate=MUTATION_RATE):
             individual[idx1], individual[idx2] = individual[idx2], individual[idx1]
     return individual
 
-# --- 4. Main GA Loop ---
 def genetic_algorithm(points_data_full, origin_idx, visitable_points_indices_selected,
                       pop_size, max_gens, mutation_rate_val, tournament_size_val, elitism_count_val,
                       no_improvement_gens_threshold, min_cost_improvement_reset, run_identifier=""):
@@ -232,7 +213,7 @@ def genetic_algorithm(points_data_full, origin_idx, visitable_points_indices_sel
         if not improved_significantly_this_gen and generation > 0 :
             generations_since_last_significant_improvement += 1
         history_best_distance.append(best_overall_distance)
-        if (generation + 1) % 100 == 0 or generation == 0 and MAX_GENERATIONS > 50: # Reduced print frequency
+        if (generation + 1) % 100 == 0 or generation == 0 and MAX_GENERATIONS > 50:
              if (generation + 1) % 50 == 0 or generation == 0 :
                 print(f"Run {run_identifier}, Gen {generation + 1}/{max_gens} - Best: {best_overall_distance:.2f} (No sig. imp. for {generations_since_last_significant_improvement} gens)")
 
@@ -266,7 +247,6 @@ def genetic_algorithm(points_data_full, origin_idx, visitable_points_indices_sel
     return best_overall_route, best_overall_distance, history_best_distance, stop_reason, gen_count
 
 
-# --- 5. Visualization ---
 def plot_route(points_data_full, route_indices, origin_idx, title="TSP Route", save_path=None):
     if not route_indices:
         print("Cannot plot empty route.")
@@ -303,7 +283,7 @@ def plot_route(points_data_full, route_indices, origin_idx, title="TSP Route", s
             print(f"Error saving route plot to {save_path}: {e}")
     if SHOW_PLOTS_AFTER_SAVING or not save_path :
         plt.show()
-    plt.close(fig) # Close the figure to free memory
+    plt.close(fig)
 
 
 def plot_fitness_history(history_best_distance, title="Cost Convergence", save_path=None):
@@ -322,26 +302,24 @@ def plot_fitness_history(history_best_distance, title="Cost Convergence", save_p
             print(f"Error saving convergence plot to {save_path}: {e}")
     if SHOW_PLOTS_AFTER_SAVING or not save_path:
         plt.show()
-    plt.close(fig) # Close the figure to free memory
+    plt.close(fig)
 
 
-# --- Main Execution ---
 if __name__ == "__main__":
     csv_file_path = "CaixeiroGruposGA.csv"
     generations_to_reach_criterion_list = []
     all_run_best_distances = []
 
-    # Create output directory if it doesn't exist
     if SAVE_PLOTS and not os.path.exists(OUTPUT_IMAGE_DIR):
         try:
             os.makedirs(OUTPUT_IMAGE_DIR)
             print(f"Created directory: {OUTPUT_IMAGE_DIR}")
         except OSError as e:
             print(f"Error creating directory {OUTPUT_IMAGE_DIR}: {e}. Plots will not be saved.")
-            SAVE_PLOTS = False # Disable saving if directory creation fails
+            SAVE_PLOTS = False
 
     for run_num in range(1, NUM_RUNS_FOR_STATS + 1):
-        run_id_str = f"run{run_num:02d}" # e.g., run01, run02
+        run_id_str = f"run{run_num:02d}"
         print(f"\n=============== STATISTICAL RUN {run_id_str}/{NUM_RUNS_FOR_STATS} ================")
         try:
             current_points_data, current_origin_idx, current_visitable_indices = load_points_numpy(csv_file_path)
